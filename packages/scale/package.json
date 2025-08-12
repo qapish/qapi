@@ -8,12 +8,15 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./metadata": {
+      "types": "./dist/metadata.d.ts",
+      "import": "./dist/metadata.js",
+      "default": "./dist/metadata.js"
     }
   },
   "types": "./dist/index.d.ts",
-  "files": [
-    "dist"
-  ],
+  "files": ["dist"],
   "sideEffects": false,
   "scripts": {
     "build": "tsup",
@@ -21,23 +24,17 @@
     "clean": "rimraf dist || true",
     "test": "vitest run"
   },
-  "devDependencies": {
-    "tsup": "^8.2.4",
-    "typescript": "^5.5.4"
-  },
   "tsup": {
-    "entry": [
-      "src/index.ts"
-    ],
-    "format": [
-      "esm"
-    ],
+    "entry": ["src/index.ts", "src/metadata.ts"],
+    "format": ["esm"],
     "dts": true,
     "sourcemap": true,
     "clean": true,
-    "minify": false
+    "minify": false,
+    "target": "es2022"
   },
-  "dependencies": {
-    "@noble/hashes": "^1.8.0"
+  "devDependencies": {
+    "tsup": "^8.5.0",
+    "typescript": "^5.9.2"
   }
 }
