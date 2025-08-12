@@ -33,6 +33,9 @@
     "minify": false,
     "target": "es2022"
   },
+  "dependencies": {
+    "@noble/hashes": "^1.8.0"
+  },
   "devDependencies": {
     "tsup": "^8.5.0",
     "typescript": "^5.9.2"

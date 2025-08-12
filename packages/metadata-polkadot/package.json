@@ -1,0 +1,43 @@
+{
+  "name": "@qapish/metadata-polkadot",
+  "version": "0.0.0",
+  "license": "GPL-3.0-only",
+  "type": "module",
+  "private": false,
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "clean": "rimraf dist || true"
+  },
+  "dependencies": {
+    "@polkadot/api": "^12.4.2",
+    "@polkadot/types": "^12.4.2",
+    "@polkadot/types-create": "^12.4.2",
+    "@polkadot/util": "^13.5.5",
+    "@polkadot/metadata": "^4.17.1",
+    "@qapish/scale": "workspace:*"
+  },
+  "devDependencies": {
+    "tsup": "^8.5.0",
+    "typescript": "^5.9.2",
+    "rimraf": "^6.0.1"
+  },
+  "tsup": {
+    "entry": ["src/index.ts"],
+    "format": ["esm"],
+    "dts": true,
+    "sourcemap": true,
+    "clean": true,
+    "minify": false,
+    "target": "es2022"
+  }
+}

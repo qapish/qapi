@@ -1,11 +1,13 @@
 // packages/scale/src/metadata.ts
-// Hardened V14/V15 metadata reader: extracts pallet {name,index,calls,events}.
-// Tolerant: per-pallet try/catch; robust skipping to avoid misalignment.
+// Hardened V14/V15/V16 metadata reader: extracts pallet { name, index, calls[], events[] }.
+// Tolerant (per-pallet try/catch); robust skipping to avoid misalignment.
 // NodeNext-safe: relative imports use .js
 import { hexToU8a } from "./index.js";
 
+const META_MAGIC = [0x6d, 0x65, 0x74, 0x61];
+
 export type MetaTables = {
-  version: 14 | 15;
+  version: 14 | 15 | 16;
   pallets: Array<{
     name: string;
     index: number; // u8 "pallet index" used in call/event indices
@@ -13,6 +15,53 @@ export type MetaTables = {
     events?: string[]; // event names in index order
   }>;
 };
+
+// helper: hex preview
+function preview(u8: Uint8Array, n = 24): string {
+  const len = Math.min(n, u8.length);
+  let s = "";
+  for (let i = 0; i < len; i++) s += u8[i]!.toString(16).padStart(2, "0");
+  return "0x" + s;
+}
+
+// unwrap strategies
+function tryUnwrapVecU8(raw: Uint8Array): Uint8Array | null {
+  try {
+    let off = 0;
+    const b0 = raw[off++]!;
+    const mode = b0 & 0b11;
+    let L = -1;
+    if (mode === 0) L = b0 >> 2;
+    else if (mode === 1) {
+      const b1 = raw[off++]!;
+      L = ((b0 >> 2) | (b1 << 6)) >>> 0;
+    } else if (mode === 2) {
+      const b1 = raw[off++]!,
+        b2 = raw[off++]!,
+        b3 = raw[off++]!;
+      L = ((b0 >> 2) | (b1 << 6) | (b2 << 14) | (b3 << 22)) >>> 0;
+    } else {
+      return null;
+    } // big-int mode, unlikely for metadata bytes wrapper
+    if (off + L === raw.length) return raw.subarray(off, off + L);
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function stripMetaMagic(u8: Uint8Array): Uint8Array {
+  if (
+    u8.length >= 5 &&
+    u8[0] === META_MAGIC[0] &&
+    u8[1] === META_MAGIC[1] &&
+    u8[2] === META_MAGIC[2] &&
+    u8[3] === META_MAGIC[3]
+  ) {
+    return u8.subarray(4);
+  }
+  return u8;
+}
 
 // ----------------- tiny reader -----------------
 class Reader {
@@ -67,7 +116,7 @@ class Reader {
     if (tag === 1) return elem();
     throw new Error("Option tag invalid");
   }
-  // utilities for tolerant skipping
+  // tolerant skipping
   skipVec(elem: () => void) {
     const len = this.compactU32();
     for (let i = 0; i < len; i++) elem();
@@ -77,11 +126,10 @@ class Reader {
       this.text();
     });
   }
-  // Skip SCALE "Bytes" (Vec<u8>)
   skipBytes() {
     const n = this.compactU32();
     this.bytes(n);
-  }
+  } // SCALE Bytes = Vec<u8>
 }
 
 // ----------------- portable registry (only what we need) -----------------
@@ -89,28 +137,37 @@ type TypeDef = {
   kind: "Variant" | "Other";
   variants?: { name: string; index: number }[];
 };
+
 function readPortableType(r: Reader): { id: number; def: TypeDef } {
   const id = r.compactU32();
-  r.skipTextVec(); // path
+
+  // path: Vec<Text>
+  r.skipTextVec();
+
+  // parameters: Vec<TypeParameter>
+  // TypeParameter { name: Text, type: Option<Compact<u32>>, typeName: Option<Text> }
   r.skipVec(() => {
-    r.text();
-    r.option(() => r.compactU32());
-  }); // parameters
+    r.text(); // name
+    r.option(() => r.compactU32()); // type
+    r.option(() => r.text()); // typeName
+  });
+
+  // TypeDefDef tag
   const tag = r.u8_();
   let def: TypeDef = { kind: "Other" };
 
   if (tag === 1 /* Variant */) {
     const variants = r.vec(() => {
       const vName = r.text();
+      // fields: Vec<Field> (skip)
       r.skipVec(() => {
-        // fields
-        r.option(() => r.text()); // name
-        r.compactU32(); // type id
-        r.option(() => r.text()); // typeName
-        r.skipTextVec(); // docs
+        r.option(() => r.text()); // Field.name
+        r.compactU32(); // Field.type (id)
+        r.option(() => r.text()); // Field.typeName
+        r.skipTextVec(); // Field.docs
       });
       const index = r.u8_();
-      r.skipTextVec(); // variant docs
+      r.skipTextVec(); // Variant.docs
       return { name: vName, index };
     });
     def = { kind: "Variant", variants };
@@ -162,9 +219,13 @@ function readPortableType(r: Reader): { id: number; def: TypeDef } {
         break;
     }
   }
-  r.skipTextVec(); // docs
+
+  // docs: Vec<Text>
+  r.skipTextVec();
+
   return { id, def };
 }
+
 function readPortableRegistry(r: Reader): Map<number, TypeDef> {
   const types = r.vec(() => readPortableType(r));
   const m = new Map<number, TypeDef>();
@@ -185,7 +246,6 @@ function readVariantNames(
 
 // ---------- tolerant pallet parser ----------
 function readOnePallet(r: Reader, registry: Map<number, TypeDef>) {
-  const start = r.offset;
   const name = r.text();
 
   // storage: Option<StorageMetadata> — skip tolerantly
@@ -202,21 +262,18 @@ function readOnePallet(r: Reader, registry: Map<number, TypeDef>) {
           // Map { hashers: Vec<StorageHasher>, key: Type, value: Type }
           r.skipVec(() => {
             r.u8_();
-          }); // hashers: enum tag(s)
+          }); // hashers (enum tags)
           r.compactU32(); // key
           r.compactU32(); // value
-        } else {
-          // unexpected, bail conservatively
         }
-        r.skipBytes(); // fallback Bytes
+        r.skipBytes(); // fallback (Bytes)
         r.skipTextVec(); // docs
       });
-      r.u8_(); // isFallbackEvicted / cache bool
+      r.u8_(); // cache bool / isFallbackEvicted
       return 0;
     });
   } catch {
-    // storage skipping failed; rewind to start of calls Option best-effort
-    // (we won’t rewind the whole pallet, just continue; misalignment will be caught by try/catch below)
+    /* tolerate */
   }
 
   // calls/events: Option<Compact<u32>>
@@ -224,14 +281,10 @@ function readOnePallet(r: Reader, registry: Map<number, TypeDef>) {
   let eventsTy: number | undefined;
   try {
     callsTy = r.option(() => r.compactU32());
-  } catch {
-    /* tolerate */
-  }
+  } catch {}
   try {
     eventsTy = r.option(() => r.compactU32());
-  } catch {
-    /* tolerate */
-  }
+  } catch {}
 
   // constants: Vec<Constant> — skip tolerantly
   try {
@@ -267,44 +320,27 @@ function readOnePallet(r: Reader, registry: Map<number, TypeDef>) {
   try {
     index = r.u8_();
   } catch {
-    // If we fail to read the index, try to resync: give up and set a sentinel.
     index = 255;
   }
 
-  // In V15 there may be trailing docs for pallet; tolerate if present.
+  // optional trailing docs in some metas
   try {
     r.skipTextVec();
-  } catch {
-    /* ignore */
-  }
+  } catch {}
 
   const calls = readVariantNames(registry, callsTy);
   const events = readVariantNames(registry, eventsTy);
 
-  // Guarantee name/index even if calls/events are undefined
-  return { name, index, calls, events, _start: start, _end: r.offset };
+  return { name, index, calls, events };
 }
 
-function readPalletsV14orV15(r: Reader, registry: Map<number, TypeDef>) {
+function readPalletsV14orV16(r: Reader, registry: Map<number, TypeDef>) {
   const len = r.compactU32();
-  const pallets = new Array<{
-    name: string;
-    index: number;
-    calls?: string[];
-    events?: string[];
-  }>(len);
+  const pallets: MetaTables["pallets"] = new Array(len);
   for (let i = 0; i < len; i++) {
     try {
-      const p = readOnePallet(r, registry);
-      pallets[i] = {
-        name: p.name,
-        index: p.index,
-        calls: p.calls,
-        events: p.events,
-      };
+      pallets[i] = readOnePallet(r, registry);
     } catch {
-      // If a pallet completely fails, skip conservatively by consuming nothing further for this entry.
-      // Fill a placeholder so callers see the count is correct.
       pallets[i] = { name: `pallet_${i}`, index: 255 };
     }
   }
@@ -315,18 +351,58 @@ function readPalletsV14orV15(r: Reader, registry: Map<number, TypeDef>) {
 export function extractMetaTables(
   metaHexOrBytes: string | Uint8Array,
 ): MetaTables {
-  const u8 =
+  const raw =
     typeof metaHexOrBytes === "string"
       ? hexToU8a(metaHexOrBytes)
       : metaHexOrBytes;
-  const r = new Reader(u8);
-  const tag = r.u8_();
-  if (tag !== 14 && tag !== 15)
-    throw new Error(`Unsupported Metadata version tag: ${tag}`);
-  const version = tag as 14 | 15;
 
-  const registry = readPortableRegistry(r);
-  const pallets = readPalletsV14orV15(r, registry);
+  // 1) Try raw as-is + strip "meta"
+  const as1 = stripMetaMagic(raw);
+  // 2) Try unwrap Vec<u8> then strip "meta"
+  const maybeVec = tryUnwrapVecU8(raw);
+  const as2 = maybeVec ? stripMetaMagic(maybeVec) : null;
 
-  return { version, pallets };
+  // choose candidate: prefer the one that looks like a versioned metadata (tag in first byte)
+  const candidates: Array<{ src: string; bytes: Uint8Array }> = [];
+  candidates.push({ src: maybeVec ? "vec+meta" : "raw+meta", bytes: as1 });
+  if (as2) candidates.push({ src: "unwrapped+meta", bytes: as2 });
+
+  let lastErr: unknown = undefined;
+
+  for (const cand of candidates) {
+    try {
+      const r = new Reader(cand.bytes);
+      const tag = r.u8_(); // version after "meta"
+      if (tag !== 14 && tag !== 15 && tag !== 16) {
+        throw new Error(
+          `bad version tag ${tag} (first bytes ${preview(cand.bytes)}) [${cand.src}]`,
+        );
+      }
+      const version = tag as 14 | 15 | 16;
+
+      const registry = readPortableRegistry(r);
+      const pallets = readPalletsV14orV16(r, registry);
+
+      // optional debug (enabled if env set)
+      if (process.env.QAPI_DEBUG) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `extractMetaTables: ok version=${version} pallets=${pallets.length} src=${cand.src} head=${preview(cand.bytes)}`,
+        );
+      }
+      return { version, pallets };
+    } catch (e) {
+      lastErr = e;
+      if (process.env.QAPI_DEBUG) {
+        // eslint-disable-next-line no-console
+        console.error(
+          `extractMetaTables: candidate failed (${cand.src}) head=${preview(cand.bytes)} err=`,
+          e,
+        );
+      }
+    }
+  }
+
+  // if both candidates fail, throw the last error (substrate will catch and fallback)
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }

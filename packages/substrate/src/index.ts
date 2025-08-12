@@ -10,8 +10,47 @@ export interface QapiConfig {
     ss58Prefix?: number;
   };
 }
+
 type Head = { hash: string; number: number };
 type MetaTables = ReturnType<typeof extractMetaTables>;
+type Extractor = typeof extractMetaTables;
+
+async function tryExtract(
+  meta: Uint8Array,
+  primary: Extractor,
+): Promise<ReturnType<Extractor> | undefined> {
+  try {
+    return primary(meta);
+  } catch {
+    /* try fallback below */
+  }
+  try {
+    // dynamic optional import (won't crash if not installed)
+    const mod = await import("@qapish/metadata-polkadot").catch(
+      () => null as any,
+    );
+    if (mod?.extractMetaTablesCompat) {
+      return mod.extractMetaTablesCompat(meta);
+    }
+  } catch {
+    /* ignore */
+  }
+  return undefined;
+}
+
+function hexPreview(u8: Uint8Array | string, n = 24): string {
+  const raw =
+    typeof u8 === "string"
+      ? u8.slice(0, 2 + n * 2)
+      : (() => {
+          let s = "0x";
+          const b = u8.subarray(0, Math.min(n, u8.length));
+          for (let i = 0; i < b.length; i++)
+            s += b[i]!.toString(16).padStart(2, "0");
+          return s;
+        })();
+  return typeof u8 === "string" ? raw : raw;
+}
 
 export class Qapi {
   private tablesLatest?: MetaTables;
@@ -29,10 +68,54 @@ export class Qapi {
       send: (m: string, p: any[] = []) => cfg.provider.send(m, p),
     } as any);
     const api = new Qapi(cfg.provider, runtime, cfg.overrides);
+
     try {
       api.tablesLatest = extractMetaTables(runtime.metadata);
       api.tablesBySpec.set(runtime.specVersion, api.tablesLatest);
-    } catch {}
+      if (process.env.QAPI_DEBUG) {
+        console.log(
+          "metadata parsed:",
+          api.tablesLatest.version,
+          "pallets:",
+          api.tablesLatest.pallets.length,
+        );
+      }
+    } catch (err) {
+      console.error(
+        "metadata: primary extractor failed:",
+        (err as Error)?.message ?? err,
+      );
+      // fallback (if you kept it)
+      try {
+        const mod = await import("@qapish/metadata-polkadot").catch(
+          () => null as any,
+        );
+        if (mod?.extractMetaTablesCompat) {
+          const t = mod.extractMetaTablesCompat(runtime.metadata);
+          api.tablesLatest = t;
+          api.tablesBySpec.set(runtime.specVersion, t);
+          console.log(
+            "metadata parsed via polkadot adapter:",
+            t.version,
+            "pallets:",
+            t.pallets.length,
+          );
+        } else {
+          console.warn(
+            "metadata: no tables; will fall back to indices; meta head:",
+            hexPreview(runtime.metadata),
+          );
+        }
+      } catch (e2) {
+        console.warn(
+          "metadata: adapter failed; will fall back to indices; meta head:",
+          hexPreview(runtime.metadata),
+          "adapter error:",
+          (e2 as Error)?.message ?? e2,
+        );
+      }
+    }
+
     return api;
   }
 
@@ -47,13 +130,9 @@ export class Qapi {
       .send("state_getMetadata", [hash])
       .catch(() => undefined);
     if (!meta) return this.tablesLatest;
-    try {
-      const t = extractMetaTables(meta);
-      if (spec) this.tablesBySpec.set(spec, t);
-      return t;
-    } catch {
-      return this.tablesLatest;
-    }
+    const t = await tryExtract(meta, extractMetaTables);
+    if (t && spec) this.tablesBySpec.set(spec, t);
+    return t ?? this.tablesLatest;
   }
 
   async disconnect() {

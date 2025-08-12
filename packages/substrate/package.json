@@ -22,6 +22,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@qapish/metadata-polkadot": "workspace:*",
     "@qapish/provider-ws": "workspace:*",
     "@qapish/runtime": "workspace:*",
     "@qapish/scale": "workspace:*",
