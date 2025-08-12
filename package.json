@@ -1,0 +1,35 @@
+{
+  "name": "@qapish/qapi",
+  "private": true,
+  "description": "qapish post-quantum blockchain libraries",
+  "license": "GPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/qapish/qapi.git"
+  },
+  "homepage": "https://qapi.sh",
+  "packageManager": "pnpm@10.14.0",
+  "scripts": {
+    "build": "pnpm -r run build",
+    "clean": "pnpm -r run clean",
+    "dev": "pnpm -r run dev",
+    "test": "pnpm -r run test"
+  },
+  "devDependencies": {
+    "@changesets/cli": "^2.27.8",
+    "@types/node": "^22.5.0",
+    "@typescript-eslint/eslint-plugin": "^8.1.0",
+    "@typescript-eslint/parser": "^8.1.0",
+    "eslint": "^9.9.0",
+    "prettier": "^3.3.3",
+    "rimraf": "^6.0.1",
+    "tsup": "^8.2.4",
+    "typescript": "^5.5.4",
+    "vitest": "^2.0.5"
+  },
+  "pnpm": {
+    "overrides": {
+      "source-map": "0.7.6"
+    }
+  }
+}
