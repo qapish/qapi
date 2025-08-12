@@ -8,6 +8,12 @@ export interface QapiConfig {
   overrides?: {
     signature?: { scheme: "ml-dsa"; variant?: string };
     ss58Prefix?: number;
+    names?: {
+      pallets?: Record<
+        number,
+        { name: string; calls?: Record<number, string> }
+      >;
+    };
   };
 }
 type Head = { hash: string; number: number };
@@ -32,7 +38,9 @@ export class Qapi {
     try {
       api.tablesLatest = extractMetaTables(runtime.metadata);
       api.tablesBySpec.set(runtime.specVersion, api.tablesLatest);
-    } catch {}
+    } catch (error) {
+      console.error("Failed to parse metadata:", (error as Error)?.message);
+    }
     return api;
   }
 
@@ -105,60 +113,40 @@ export class Qapi {
   });
 
   codec = {
-    // Unsigned extrinsics → names; signed → show indices + reason (until skipper lands)
     decodeExtrinsicName: async (hex: string, opts?: { at?: string }) => {
-      const t = await this.tablesForBlock(opts?.at);
+      const table = await this.tablesForBlock(opts?.at);
       const u8 = hexToU8a(hex);
       const { isSigned, offset } = readExtrinsicPrefix(u8);
 
       const palletIdx = u8[offset] ?? 0xff;
       const callIdx = u8[offset + 1] ?? 0xff;
 
-      if (!t) {
-        return {
-          pallet: `unknown(${palletIdx})`,
-          method: `unknown(${callIdx})`,
-          signed: isSigned,
-          reason: "no-metadata",
-        };
-      }
-
-      const pallet = t.pallets.find((p) => p.index === palletIdx);
-      const method = pallet?.calls?.[callIdx];
-
-      if (isSigned) {
+      // if metadata worked
+      if (table) {
+        const pallet = table.pallets.find((p) => p.index === palletIdx);
+        const method = pallet?.calls?.[callIdx];
         return {
           pallet: pallet?.name ?? `unknown(${palletIdx})`,
           method: method ?? `unknown(${callIdx})`,
-          signed: true,
-          reason: "signed-not-parsed",
+          signed: isSigned,
+          reason: method
+            ? undefined
+            : pallet
+              ? "call-index-out-of-range"
+              : "pallet-index-not-found",
         };
       }
-      return {
-        pallet: pallet?.name ?? `unknown(${palletIdx})`,
-        method: method ?? `unknown(${callIdx})`,
-        signed: false,
-      };
-    },
 
-    // Map [palletIdx, eventIdx] → "pallet.event" using metadata tables.
-    decodeEventName: async (
-      palletIdx: number,
-      eventIdx: number,
-      opts?: { at?: string },
-    ) => {
-      const t = await this.tablesForBlock(opts?.at);
-      if (!t)
-        return {
-          pallet: `unknown(${palletIdx})`,
-          event: `unknown(${eventIdx})`,
-          reason: "no-metadata",
-        };
-      const pallet = t.pallets.find((p) => p.index === palletIdx);
-      const event = pallet?.events?.[eventIdx];
+      // metadata failed → try manual override map
+      const pm = this.overrides?.names?.pallets?.[palletIdx];
+      const palletName = pm?.name ?? `unknown(${palletIdx})`;
+      const methodName = pm?.calls?.[callIdx] ?? `unknown(${callIdx})`;
+
       return {
-        pallet: pallet?.name ?? `unknown(${palletIdx})`,
-        event: event ?? `unknown(${eventIdx})`,
+        pallet: palletName,
+        method: methodName,
+        signed: isSigned,
+        reason: "no-metadata",
       };
     },
   };

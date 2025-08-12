@@ -8,11 +8,12 @@
   },
   "dependencies": {
     "@qapish/provider-ws": "workspace:*",
-    "@qapish/runtime": "workspace:*",
+    "@qapish/scale": "workspace:*",
     "@qapish/substrate": "workspace:*"
   },
   "devDependencies": {
     "ts-node": "^10.9.2",
+    "tsx": "^4.20.0",
     "typescript": "^5.4.0"
   }
 }

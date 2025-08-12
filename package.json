@@ -31,5 +31,8 @@
     "overrides": {
       "source-map": "0.7.6"
     }
+  },
+  "dependencies": {
+    "@noble/hashes": "^1.8.0"
   }
 }

@@ -1,5 +1,9 @@
 import { WsProvider } from "@qapish/provider-ws";
 import { Qapi } from "@qapish/substrate";
+import { u8aToHex } from "@qapish/scale";
+import { writeFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
 type Args = {
   endpoint?: string;
@@ -23,8 +27,39 @@ async function main() {
   console.log(`Connecting to ${endpoint} ...`);
   const qapi = await Qapi.connect({
     provider: new WsProvider(endpoint),
-    overrides: { signature: { scheme: "ml-dsa", variant: sigVariant } },
+    overrides: {
+      signature: { scheme: "ml-dsa", variant: sigVariant },
+      names: {
+        pallets: {
+          0: { name: "override-00" },
+          1: {
+            name: "override-01",
+            calls: { 0: "override-00", 1: "override-01" },
+          },
+          // add as you learn them
+        },
+      },
+    },
   });
+  const metaHex =
+    typeof (qapi as any).runtime?.metadata === "string"
+      ? (qapi as any).runtime.metadata
+      : u8aToHex((qapi as any).runtime.metadata);
+  console.log("metadata head:", metaHex.slice(0, 66), "len:", metaHex.length);
+  
+  // Get the directory of the current script
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = dirname(__filename);
+  const outputPath = join(__dirname, "../metadata.hex");
+  
+  if (process.env.QAPI_DEBUG) {
+    console.log("Writing metadata to:", outputPath);
+    console.log("Current working directory:", process.cwd());
+    console.log("Script directory:", __dirname);
+  }
+  
+  writeFileSync(outputPath, metaHex);
+  console.log("Metadata written to:", outputPath);
 
   const rt = qapi.runtimeInfo();
   console.log(
