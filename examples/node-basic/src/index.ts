@@ -46,8 +46,7 @@ async function main() {
       for (const [i, exHex] of block.extrinsics.entries()) {
         const name = await qapi.codec.decodeExtrinsicName(exHex, { at: hash });
         console.log(
-          `#${i}: ${name.signed ? "signed" : "unsigned"} ${name.pallet}.${name.method}` +
-            (name.reason ? ` (${name.reason})` : ""),
+          `#${i}: ${name.signed ? "signed" : "unsigned"} ${name.pallet}.${name.method}${name.reason ? " (" + name.reason + ")" : ""}`,
         );
       }
 

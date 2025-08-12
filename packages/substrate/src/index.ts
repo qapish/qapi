@@ -3,9 +3,6 @@ import { hexToU8a, readExtrinsicPrefix } from "@qapish/scale";
 import { WsProvider } from "@qapish/provider-ws";
 import { fetchRuntime, type RuntimeInfo } from "@qapish/runtime";
 
-type MetaTables = ReturnType<typeof extractMetaTables>;
-type Head = { hash: string; number: number };
-
 export interface QapiConfig {
   provider: WsProvider;
   overrides?: {
@@ -13,6 +10,8 @@ export interface QapiConfig {
     ss58Prefix?: number;
   };
 }
+type Head = { hash: string; number: number };
+type MetaTables = ReturnType<typeof extractMetaTables>;
 
 export class Qapi {
   private tablesLatest?: MetaTables;
@@ -61,6 +60,8 @@ export class Qapi {
     (this.provider as any).close?.();
   }
 
+  rpc = { send: (m: string, p: any[] = []) => this.provider.send(m, p) };
+
   chainHead = {
     subscribe: (cb: (h: Head) => void) =>
       this.provider.subscribe(
@@ -104,15 +105,16 @@ export class Qapi {
   });
 
   codec = {
-    // Unsigned extrinsics decode to names; signed return indices with reason
+    // Unsigned extrinsics → names; signed → show indices + reason (until skipper lands)
     decodeExtrinsicName: async (hex: string, opts?: { at?: string }) => {
       const t = await this.tablesForBlock(opts?.at);
       const u8 = hexToU8a(hex);
       const { isSigned, offset } = readExtrinsicPrefix(u8);
 
+      const palletIdx = u8[offset] ?? 0xff;
+      const callIdx = u8[offset + 1] ?? 0xff;
+
       if (!t) {
-        const palletIdx = u8[offset] ?? 0xff;
-        const callIdx = u8[offset + 1] ?? 0xff;
         return {
           pallet: `unknown(${palletIdx})`,
           method: `unknown(${callIdx})`,
@@ -121,12 +123,10 @@ export class Qapi {
         };
       }
 
+      const pallet = t.pallets.find((p) => p.index === palletIdx);
+      const method = pallet?.calls?.[callIdx];
+
       if (isSigned) {
-        // Next step will parse & skip signed payload using SignedExtensions. For now: indices.
-        const palletIdx = u8[offset] ?? 0xff;
-        const callIdx = u8[offset + 1] ?? 0xff;
-        const pallet = t.pallets.find((p) => p.index === palletIdx);
-        const method = pallet?.calls?.[callIdx];
         return {
           pallet: pallet?.name ?? `unknown(${palletIdx})`,
           method: method ?? `unknown(${callIdx})`,
@@ -134,12 +134,6 @@ export class Qapi {
           reason: "signed-not-parsed",
         };
       }
-
-      const palletIdx = u8[offset] ?? 0xff;
-      const callIdx = u8[offset + 1] ?? 0xff;
-      const pallet = t.pallets.find((p) => p.index === palletIdx);
-      const method = pallet?.calls?.[callIdx];
-
       return {
         pallet: pallet?.name ?? `unknown(${palletIdx})`,
         method: method ?? `unknown(${callIdx})`,
