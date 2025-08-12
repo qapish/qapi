@@ -36,5 +36,8 @@
     "sourcemap": true,
     "clean": true,
     "minify": false
+  },
+  "dependencies": {
+    "@noble/hashes": "^1.8.0"
   }
 }

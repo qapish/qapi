@@ -102,4 +102,17 @@ export class WsProvider {
       }
     };
   }
+
+  close() {
+    this.reconnect = false;
+    if (
+      this.ws &&
+      (this.ws.readyState === this.ws.OPEN ||
+        this.ws.readyState === this.ws.CONNECTING)
+    ) {
+      try {
+        this.ws.close();
+      } catch {}
+    }
+  }
 }

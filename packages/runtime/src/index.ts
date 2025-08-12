@@ -1,9 +1,8 @@
-// packages/runtime/src/index.ts
 export interface RuntimeInfo {
   specName: string;
   specVersion: number;
   ss58Prefix?: number;
-  metadata: Uint8Array; // SCALE hex decoded
+  metadata: Uint8Array;
 }
 
 export interface RpcLike {

@@ -1,0 +1,18 @@
+{
+  "name": "node-basic",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@qapish/provider-ws": "workspace:*",
+    "@qapish/runtime": "workspace:*",
+    "@qapish/substrate": "workspace:*"
+  },
+  "devDependencies": {
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.0"
+  }
+}
