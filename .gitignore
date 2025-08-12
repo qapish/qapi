@@ -152,3 +152,6 @@ bower_components/
 jspm_packages/
 web_modules/
 *.log.gz
+
+
+metadata.hex

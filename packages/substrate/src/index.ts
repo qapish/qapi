@@ -8,11 +8,21 @@ export interface QapiConfig {
   overrides?: {
     signature?: { scheme: "ml-dsa"; variant?: string };
     ss58Prefix?: number;
-    names?: {
-      pallets?: Record<
-        number,
-        { name: string; calls?: Record<number, string> }
-      >;
+    metadata?: {
+      // Allow custom metadata parser or pre-parsed tables
+      customParser?: (metaHexOrBytes: string | Uint8Array) => MetaTables;
+      // Or provide pre-parsed metadata tables directly
+      tables?: {
+        version: 14 | 15 | 16;
+        pallets: Array<{
+          name: string;
+          index: number;
+          calls?: Array<{ name: string; index: number }>;
+          events?: Array<{ name: string; index: number }>;
+        }>;
+      };
+      // Skip metadata parsing errors
+      ignoreParseErrors?: boolean;
     };
   };
 }
@@ -35,12 +45,35 @@ export class Qapi {
       send: (m: string, p: any[] = []) => cfg.provider.send(m, p),
     } as any);
     const api = new Qapi(cfg.provider, runtime, cfg.overrides);
-    try {
-      api.tablesLatest = extractMetaTables(runtime.metadata);
-      api.tablesBySpec.set(runtime.specVersion, api.tablesLatest);
-    } catch (error) {
-      console.error("Failed to parse metadata:", (error as Error)?.message);
+    
+    // Use custom metadata if provided
+    if (cfg.overrides?.metadata?.tables) {
+      // Convert override format to internal MetaTables format
+      const overrideTables = cfg.overrides.metadata.tables;
+      const convertedTables: MetaTables = {
+        version: overrideTables.version,
+        pallets: overrideTables.pallets.map(p => ({
+          name: p.name,
+          index: p.index,
+          calls: p.calls?.map(c => c.name),
+          events: p.events?.map(e => e.name),
+        })),
+      };
+      api.tablesLatest = convertedTables;
+      api.tablesBySpec.set(runtime.specVersion, convertedTables);
+    } else {
+      // Try to parse metadata
+      try {
+        const parser = cfg.overrides?.metadata?.customParser || extractMetaTables;
+        api.tablesLatest = parser(runtime.metadata);
+        api.tablesBySpec.set(runtime.specVersion, api.tablesLatest);
+      } catch (error) {
+        if (!cfg.overrides?.metadata?.ignoreParseErrors) {
+          console.error("Failed to parse metadata:", (error as Error)?.message);
+        }
+      }
     }
+    
     return api;
   }
 
@@ -121,7 +154,7 @@ export class Qapi {
       const palletIdx = u8[offset] ?? 0xff;
       const callIdx = u8[offset + 1] ?? 0xff;
 
-      // if metadata worked
+      // if metadata worked or override tables provided
       if (table) {
         const pallet = table.pallets.find((p) => p.index === palletIdx);
         const method = pallet?.calls?.[callIdx];
@@ -137,14 +170,10 @@ export class Qapi {
         };
       }
 
-      // metadata failed → try manual override map
-      const pm = this.overrides?.names?.pallets?.[palletIdx];
-      const palletName = pm?.name ?? `unknown(${palletIdx})`;
-      const methodName = pm?.calls?.[callIdx] ?? `unknown(${callIdx})`;
-
+      // No metadata available
       return {
-        pallet: palletName,
-        method: methodName,
+        pallet: `unknown(${palletIdx})`,
+        method: `unknown(${callIdx})`,
         signed: isSigned,
         reason: "no-metadata",
       };

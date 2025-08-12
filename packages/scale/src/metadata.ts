@@ -33,7 +33,6 @@ class Reader {
   eof() {
     return this.o >= this.u8.length;
   }
-
   u8_(): number {
     if (this.o >= this.u8.length) throw new Error("read u8 OOB");
     return this.u8[this.o++]!;
@@ -47,7 +46,9 @@ class Reader {
     return (a | (b << 8) | (c << 16) | (d << 24)) >>> 0;
   }
   bytes(n: number): Uint8Array {
-    if (this.o + n > this.u8.length) throw new Error("read bytes OOB");
+    if (this.o + n > this.u8.length) {
+      throw new Error(`read bytes OOB: need ${n} bytes at offset ${this.o}, but only ${this.u8.length - this.o} available (total length: ${this.u8.length})`);
+    }
     const out = this.u8.subarray(this.o, this.o + n);
     this.o += n;
     return out;
@@ -68,12 +69,23 @@ class Reader {
     }
     // mode === 3 (big int): len = (b0 >> 2) + 4, next len bytes little-endian
     const len = (b0 >>> 2) + 4;
+    // For u32, we only need up to 4 bytes
+    const bytesToRead = Math.min(len, 4);
     let val = 0;
-    for (let i = 0; i < len; i++) val += this.u8_() * 2 ** (8 * i);
+    for (let i = 0; i < bytesToRead; i++) {
+      val |= this.u8_() << (8 * i);
+    }
+    // Skip any remaining bytes if len > 4
+    for (let i = bytesToRead; i < len; i++) {
+      this.u8_();
+    }
     return val >>> 0;
   }
   text(): string {
     const len = this.compactU32();
+    if (len > 10000) {
+      console.warn(`Warning: attempting to read text of length ${len} at offset ${this.o}`);
+    }
     const b = this.bytes(len);
     return new TextDecoder().decode(b);
   }
@@ -101,8 +113,16 @@ class Reader {
   }
   skipBytes() {
     const n = this.compactU32();
-    this.bytes(n);
+    const remaining = this.u8.length - this.o;
+    if (n > remaining) {
+      throw new Error(`read bytes OOB: trying to skip ${n} bytes but only ${remaining} remaining at offset ${this.o}/${this.u8.length}`);
+    }
+    this.o += n; // fast-forward; we don't need the slice here
   } // SCALE Bytes = Vec<u8>
+  peek(): number {
+    if (this.o >= this.u8.length) throw new Error("peek OOB");
+    return this.u8[this.o]!;
+  }
 }
 
 // ----------------------- Portable Registry (Si1) --------------------------
@@ -121,14 +141,18 @@ function skipSiField(r: Reader) {
 
 // TypeParameter: name: Text, type: Option<Compact<u32>>, typeName: Option<Text>
 function skipSiTypeParameter(r: Reader) {
-  r.text();
-  r.option(() => r.compactU32());
-  r.option(() => r.text());
+  r.text(); // name: Text
+  r.option(() => r.compactU32()); // type: Option<Compact<u32>>
+  const nxt = r.peek();
+  if (nxt === 0 || nxt === 1) {
+    r.option(() => r.text()); // typeName?: Option<Text> (present on some chains)
+  }
 }
 
 function readSiTypeDef(r: Reader): TypeDef {
   // IMPORTANT: TypeDef discriminant is a u8
   const tag = r.u8_();
+
   switch (tag) {
     case 1: {
       // Variant { variants: Vec<SiVariant> }
@@ -185,7 +209,8 @@ function readSiTypeDef(r: Reader): TypeDef {
       return { kind: "Other" };
     }
     default:
-      return { kind: "Other" };
+      // Unknown TypeDef variant - throw error to be caught by caller
+      throw new Error(`Unknown TypeDef variant: ${tag}`);
   }
 }
 
@@ -208,6 +233,7 @@ function readPortableType(r: Reader): { id: number; def: TypeDef } {
 }
 
 function readPortableRegistry(r: Reader): Map<number, TypeDef> {
+  const len = r.compactU32();
   const types = r.vec(() => readPortableType(r));
   const m = new Map<number, TypeDef>();
   for (const t of types) m.set(t.id, t.def);
@@ -230,33 +256,30 @@ function readOnePallet(r: Reader, reg: Map<number, TypeDef>) {
   const name = r.text();
 
   // storage: Option<StorageMetadata>
-  try {
-    r.option(() => {
-      r.text(); // prefix
-      // items: Vec<StorageEntryMetadata>
-      r.skipVec(() => {
-        r.text(); // entry name
-        r.u8_(); // modifier (enum u8)
-        const entryKind = r.u8_(); // Plain=0, Map=1 (enum u8)
-        if (entryKind === 0) {
-          r.compactU32(); // Plain { type }
-        } else if (entryKind === 1) {
-          // Map { hashers, key, value }
-          r.skipVec(() => {
-            r.u8_();
-          }); // hashers: Vec<Hasher enum u8>
-          r.compactU32(); // key type id
-          r.compactU32(); // value type id
-        }
-        r.skipBytes(); // fallback Bytes
-        r.skipTextVec(); // docs
-      });
-      r.u8_(); // isFallbackEvicted/cache flag
-      return 0;
+  r.option(() => {
+    r.text(); // prefix
+    r.skipVec(() => {
+      r.text(); // entry name
+      r.u8_(); // modifier (enum u8)
+      const entryKind = r.u8_(); // 0=Plain, 1=Map, 2=NMap
+      if (entryKind === 0) {
+        r.compactU32(); // Plain { type }
+      } else if (entryKind === 1 || entryKind === 2) {
+        // Map / NMap { hashers: Vec<StorageHasher>, key: Type, value: Type }
+        r.skipVec(() => {
+          r.u8_();
+        }); // StorageHasher enum (u8) per element
+        r.compactU32(); // key type id
+        r.compactU32(); // value type id
+      } else {
+        // Unknown kind: skip conservatively (do nothing extra)
+      }
+      r.skipBytes(); // fallback (Bytes)
+      r.skipTextVec(); // docs
     });
-  } catch {
-    /* tolerate */
-  }
+    // DO NOT read a trailing flag here
+    return 0;
+  });
 
   // calls: Option<Compact<u32>>; events: Option<Compact<u32>>
   let callsTy: number | undefined;
@@ -387,7 +410,7 @@ export function extractMetaTables(
         throw new Error(`bad version tag ${ver}`);
       const version = ver as 14 | 15 | 16;
 
-      const registry = readPortableRegistry(r);
+      const registry = readPortableRegistryWithFallback(r);
       const pallets = readPallets(r, registry);
 
       return { version, pallets };
@@ -397,4 +420,91 @@ export function extractMetaTables(
   }
 
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+}
+
+// New function that handles unknown TypeDef variants
+function readPortableRegistryWithFallback(r: Reader): Map<number, TypeDef> {
+  const startOffset = r.offset;
+  const len = r.compactU32();
+  const m = new Map<number, TypeDef>();
+  
+  let consecutiveFailures = 0;
+  
+  for (let i = 0; i < len; i++) {
+    try {
+      const type = readPortableType(r);
+      m.set(type.id, type.def);
+      consecutiveFailures = 0; // Reset on success
+    } catch (e) {
+      consecutiveFailures++;
+      
+      // Log the error for debugging
+      if (e instanceof Error && e.message.includes("Unknown TypeDef variant")) {
+        console.warn(`Type ${i}: ${e.message}`);
+      } else {
+        console.warn(`Type ${i}: Failed to parse - ${e}`);
+      }
+      
+      // Add placeholder for failed type
+      m.set(i, { kind: "Other" as const });
+      
+      // If we're getting too many consecutive failures, the data might be corrupted
+      if (consecutiveFailures > 5) {
+        console.error(`Too many consecutive type parsing failures (${consecutiveFailures}). Stopping at type ${i}/${len}.`);
+        break;
+      }
+      
+      // Try to recover by finding the next type
+      if (i + 1 < len && !tryRecoverToNextType(r, i + 1, len)) {
+        console.error(`Could not recover after type ${i}. Stopping registry parsing.`);
+        break;
+      }
+    }
+  }
+  
+  if (m.size === 0) {
+    throw new Error("Failed to parse any types from the registry");
+  }
+  
+  console.log(`Parsed ${m.size}/${len} types from registry`);
+  return m;
+}
+
+// Helper function to try to find the next type in the stream
+function tryRecoverToNextType(r: Reader, expectedId: number, totalTypes: number): boolean {
+  const savedOffset = r.offset;
+  const maxSearch = Math.min(1000, r.u8.length - r.offset);
+  
+  // Look for a reasonable type ID followed by what looks like a path vec
+  for (let searchOffset = 0; searchOffset < maxSearch; searchOffset++) {
+    try {
+      r.o = savedOffset + searchOffset;
+      
+      // Try to read a compact u32
+      const id = r.compactU32();
+      
+      // Check if this could be our expected type ID
+      if (id === expectedId || (id > expectedId && id < totalTypes)) {
+        // Verify this looks like a valid type by checking if the next value
+        // could be a path vec (should be empty or small for most types)
+        const pathLenOffset = r.offset;
+        const pathLen = r.compactU32();
+        
+        if (pathLen < 20) { // Most type paths are short
+          // This looks promising, rewind to start of type
+          r.o = savedOffset + searchOffset;
+          return true;
+        }
+        
+        // Not a valid path length, continue searching
+        r.o = pathLenOffset;
+      }
+    } catch {
+      // Continue searching
+    }
+  }
+  
+  // Could not find next type
+  r.o = savedOffset;
+  return false;
 }
